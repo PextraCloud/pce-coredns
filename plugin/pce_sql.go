@@ -25,8 +25,10 @@ import (
 	_ "github.com/lib/pq"
 )
 
+var sqlOpen = sql.Open
+
 func (p *PcePlugin) Connect() error {
-	db, err := sql.Open("postgres", p.DataSource)
+	db, err := sqlOpen("postgres", p.DataSource)
 	if err != nil {
 		return fmt.Errorf("failed to open database: %v", err)
 	}

@@ -3,6 +3,7 @@ module github.com/PextraCloud/pce_coredns
 go 1.25.5
 
 require (
+	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/coredns/caddy v1.1.4-0.20250930002214-15135a999495
 	github.com/miekg/dns v1.1.68
 )
