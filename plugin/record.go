@@ -134,7 +134,7 @@ func recordToRR(record *dbRecord) (dns.RR, error) {
 	case dns.TypeTXT:
 		return record.AsTXTRecord()
 	default:
-		return nil, fmt.Errorf("unsupported record type: %s", record.Type)
+		return nil, fmt.Errorf("unsupported record type: %d", record.Type)
 	}
 }
 

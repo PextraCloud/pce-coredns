@@ -50,8 +50,6 @@ func TestParseConfigSuccess(t *testing.T) {
 
 	c := caddy.NewTestController("dns", `pce {
 		datasource postgres://user:pass@localhost/db
-		table records
-		ttl 120
 		fallthrough example.com example.org
 	}`)
 	p, err := parseConfig(c)
@@ -60,12 +58,6 @@ func TestParseConfigSuccess(t *testing.T) {
 	}
 	if p.DataSource != "postgres://user:pass@localhost/db" {
 		t.Fatalf("unexpected datasource: %s", p.DataSource)
-	}
-	if p.TableName != "records" {
-		t.Fatalf("unexpected table name: %s", p.TableName)
-	}
-	if p.DefaultTTL != 120 {
-		t.Fatalf("unexpected ttl: %d", p.DefaultTTL)
 	}
 	expectedZones := []string{"example.com.", "example.org."}
 	if !reflect.DeepEqual(p.fallthroughZones, expectedZones) {
@@ -82,21 +74,9 @@ func TestParseConfigSuccess(t *testing.T) {
 func TestParseConfigValidationError(t *testing.T) {
 	c := caddy.NewTestController("dns", `pce {
 		datasource dsn
-		table records
 	}`)
 	if _, err := parseConfig(c); err == nil {
 		t.Fatalf("expected validation error")
-	}
-}
-
-func TestParseConfigInvalidTTL(t *testing.T) {
-	c := caddy.NewTestController("dns", `pce {
-		datasource dsn
-		table records
-		ttl nope
-	}`)
-	if _, err := parseConfig(c); err == nil || !strings.Contains(err.Error(), "invalid ttl value") {
-		t.Fatalf("expected invalid ttl error, got %v", err)
 	}
 }
 
@@ -129,8 +109,6 @@ func TestSetupRegistersPlugin(t *testing.T) {
 
 	c := caddy.NewTestController("dns", `pce {
 		datasource postgres://user:pass@localhost/db
-		table records
-		ttl 60
 	}`)
 	if err := setup(c); err != nil {
 		t.Fatalf("setup failed: %v", err)
@@ -144,7 +122,6 @@ func TestSetupRegistersPlugin(t *testing.T) {
 func TestSetupPropagatesError(t *testing.T) {
 	c := caddy.NewTestController("dns", `pce {
 		datasource dsn
-		table records
 	}`)
 	if err := setup(c); err == nil {
 		t.Fatalf("expected setup to fail when parseConfig fails")

@@ -26,6 +26,36 @@ import (
 	"github.com/miekg/dns"
 )
 
+const loadZonesQuery = `SELECT dns_zone FROM organizations`
+const nodeRecordsQuery = `SELECT
+	nodes.ip_address,
+	nodes.dns_label AS node_dns_label,
+	clusters.dns_label AS cluster_dns_label,
+	datacenters.dns_label AS datacenter_dns_label
+FROM nodes
+	INNER JOIN clusters ON nodes.cluster_id = clusters.id
+	INNER JOIN datacenters ON clusters.datacenter_id = datacenters.id
+	INNER JOIN organizations ON datacenters.organization_id = organizations.id
+WHERE
+	nodes.alive = true
+	AND nodes.last_seen >= NOW() - INTERVAL '60 seconds'
+	AND organizations.dns_zone = $1`
+const clusterRecordsQuery = `SELECT
+	clusters.dns_label AS cluster_dns_label,
+	clusters.leader_id AS cluster_leader_node_id,
+	datacenters.dns_label AS datacenter_dns_label,
+	nodes.id AS node_id,
+	nodes.ip_address AS node_ip_address,
+	nodes.dns_label AS node_dns_label
+FROM nodes
+	INNER JOIN clusters ON nodes.cluster_id = clusters.id
+	INNER JOIN datacenters ON clusters.datacenter_id = datacenters.id
+	INNER JOIN organizations ON datacenters.organization_id = organizations.id
+WHERE
+	nodes.alive = true
+	AND nodes.last_seen >= NOW() - INTERVAL '60 seconds'
+	AND organizations.dns_zone = $1`
+
 var sqlOpen = sql.Open
 
 func (p *PcePlugin) Connect() error {
@@ -49,8 +79,7 @@ func (p *PcePlugin) Connect() error {
 }
 
 func (p *PcePlugin) loadZones(ctx context.Context) error {
-	query := `SELECT dns_zone FROM organizations`
-	rows, err := p.db.QueryContext(ctx, query)
+	rows, err := p.db.QueryContext(ctx, loadZonesQuery)
 	if err != nil {
 		return fmt.Errorf("failed to load zones from database: %v", err)
 	}
@@ -74,20 +103,7 @@ func (p *PcePlugin) loadZones(ctx context.Context) error {
 
 func (p *PcePlugin) loadNodeRecords(ctx context.Context, zone string) ([]dbRecord, error) {
 	// TODO: support ipv6 (AAAA)
-	query := `SELECT
-		nodes.ip_address,
-		nodes.dns_label AS node_dns_label,
-		clusters.dns_label AS cluster_dns_label,
-		datacenters.dns_label AS datacenter_dns_label
-	FROM nodes
-		INNER JOIN clusters ON nodes.cluster_id = clusters.id
-		INNER JOIN datacenters ON clusters.datacenter_id = datacenters.id
-		INNER JOIN organizations ON datacenters.organization_id = organizations.id
-	WHERE
-		nodes.alive = true
-		AND nodes.last_seen >= NOW() - INTERVAL '60 seconds'
-		AND organizations.dns_zone = $1`
-	rows, err := p.db.QueryContext(ctx, query, zone)
+	rows, err := p.db.QueryContext(ctx, nodeRecordsQuery, zone)
 	if err != nil {
 		return nil, err
 	}
@@ -118,22 +134,7 @@ func (p *PcePlugin) loadNodeRecords(ctx context.Context, zone string) ([]dbRecor
 
 func (p *PcePlugin) loadClusterRecords(ctx context.Context, zone string) ([]dbRecord, error) {
 	// TODO: support ipv6 (AAAA)
-	query := `SELECT
-		clusters.dns_label AS cluster_dns_label,
-		clusters.leader_id AS cluster_leader_node_id,
-		datacenters.dns_label AS datacenter_dns_label,
-		nodes.id AS node_id,
-		nodes.ip_address AS node_ip_address,
-		nodes.dns_label AS node_dns_label
-	FROM nodes
-		INNER JOIN clusters ON nodes.cluster_id = clusters.id
-		INNER JOIN datacenters ON clusters.datacenter_id = datacenters.id
-		INNER JOIN organizations ON datacenters.organization_id = organizations.id
-	WHERE
-		nodes.alive = true
-		AND nodes.last_seen >= NOW() - INTERVAL '60 seconds'
-		AND organizations.dns_zone = $1`
-	rows, err := p.db.QueryContext(ctx, query, zone)
+	rows, err := p.db.QueryContext(ctx, clusterRecordsQuery, zone)
 	if err != nil {
 		return nil, err
 	}
