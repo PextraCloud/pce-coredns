@@ -1,4 +1,4 @@
-module github.com/PextraCloud/pce_coredns
+module github.com/PextraCloud/pce-coredns
 
 go 1.25.5
 
