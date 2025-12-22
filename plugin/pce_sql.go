@@ -19,10 +19,11 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
+	"net"
 	"time"
 
 	_ "github.com/lib/pq"
+	"github.com/miekg/dns"
 )
 
 var sqlOpen = sql.Open
@@ -48,7 +49,7 @@ func (p *PcePlugin) Connect() error {
 }
 
 func (p *PcePlugin) loadZones(ctx context.Context) error {
-	query := `SELECT DISTINCT zone FROM ` + p.TableName
+	query := `SELECT dns_zone FROM organizations`
 	rows, err := p.db.QueryContext(ctx, query)
 	if err != nil {
 		return fmt.Errorf("failed to load zones from database: %v", err)
@@ -71,45 +72,41 @@ func (p *PcePlugin) loadZones(ctx context.Context) error {
 	return nil
 }
 
-// toRelativeName converts a FQDN to a name relative to the given zone.
-func toRelativeName(name, zone string) string {
-	// Remove trailing dots (normalize)
-	zone = strings.TrimSuffix(zone, ".")
-	name = strings.TrimSuffix(name, ".")
-
-	// Zone apex
-	if name == zone {
-		return ""
-	}
-
-	// Remove zone suffix from name
-	return strings.TrimSuffix(name, "."+zone)
-}
-
-func (p *PcePlugin) lookupRecords(ctx context.Context, zone, name string, qtype string) ([]dbRecord, error) {
-	relativeName := toRelativeName(name, zone)
-	query := `SELECT name, zone, type, ttl, content FROM ` + p.TableName + ` WHERE zone=$1 AND name=$2 AND type=$3`
-	rows, err := p.db.QueryContext(ctx, query, zone, relativeName, qtype)
-
+func (p *PcePlugin) loadNodeRecords(ctx context.Context, zone string) ([]dbRecord, error) {
+	// TODO: support ipv6 (AAAA)
+	query := `SELECT
+		nodes.ip_address,
+		nodes.dns_label AS node_dns_label,
+		clusters.dns_label AS cluster_dns_label,
+		datacenters.dns_label AS datacenter_dns_label
+	FROM nodes
+		INNER JOIN clusters ON nodes.cluster_id = clusters.id
+		INNER JOIN datacenters ON clusters.datacenter_id = datacenters.id
+		INNER JOIN organizations ON datacenters.organization_id = organizations.id
+	WHERE
+		nodes.alive = true
+		AND nodes.last_seen >= NOW() - INTERVAL '60 seconds'
+		AND organizations.dns_zone = $1`
+	rows, err := p.db.QueryContext(ctx, query, zone)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
 	var records []dbRecord
-	var rName, rZone, rType, rContent string
-	var rTTL int
+	var ipAddress, nodeDNSLabel, clusterDNSLabel, datacenterDNSLabel string
 	for rows.Next() {
-		if err := rows.Scan(&rName, &rZone, &rType, &rTTL, &rContent); err != nil {
+		if err := rows.Scan(&ipAddress, &nodeDNSLabel, &clusterDNSLabel, &datacenterDNSLabel); err != nil {
 			return nil, err
 		}
 
+		fqdn := dns.Fqdn(fmt.Sprintf("%s.%s.%s.%s", nodeDNSLabel, clusterDNSLabel, datacenterDNSLabel, zone))
 		records = append(records, dbRecord{
-			Name:    rName,
-			Zone:    rZone,
-			Type:    rType,
-			TTL:     uint32(rTTL),
-			Content: rContent,
+			FQDN: fqdn,
+			Type: dns.TypeA,
+			TTL:  30,
+			// TODO: potential panic (net.ParseIP) if IP is invalid
+			Content: dbRecordContent{IP: net.ParseIP(ipAddress)},
 		})
 	}
 
@@ -117,4 +114,94 @@ func (p *PcePlugin) lookupRecords(ctx context.Context, zone, name string, qtype 
 		return nil, err
 	}
 	return records, nil
+}
+
+func (p *PcePlugin) loadClusterRecords(ctx context.Context, zone string) ([]dbRecord, error) {
+	// TODO: support ipv6 (AAAA)
+	query := `SELECT
+		clusters.dns_label AS cluster_dns_label,
+		clusters.leader_id AS cluster_leader_node_id,
+		datacenters.dns_label AS datacenter_dns_label,
+		nodes.id AS node_id,
+		nodes.ip_address AS node_ip_address,
+		nodes.dns_label AS node_dns_label
+	FROM nodes
+		INNER JOIN clusters ON nodes.cluster_id = clusters.id
+		INNER JOIN datacenters ON clusters.datacenter_id = datacenters.id
+		INNER JOIN organizations ON datacenters.organization_id = organizations.id
+	WHERE
+		nodes.alive = true
+		AND nodes.last_seen >= NOW() - INTERVAL '60 seconds'
+		AND organizations.dns_zone = $1`
+	rows, err := p.db.QueryContext(ctx, query, zone)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var records []dbRecord
+	var clusterDNSLabel, clusterLeaderNodeID, datacenterDNSLabel, nodeID, nodeIPAddress, nodeDNSLabel string
+	for rows.Next() {
+		if err := rows.Scan(&clusterDNSLabel, &clusterLeaderNodeID, &datacenterDNSLabel, &nodeID, &nodeIPAddress, &nodeDNSLabel); err != nil {
+			return nil, err
+		}
+
+		// Cluster nodes: `<cluster>.<datacenter>.<organization zone>`
+		fqdn := dns.Fqdn(fmt.Sprintf("%s.%s.%s", clusterDNSLabel, datacenterDNSLabel, zone))
+		records = append(records, dbRecord{
+			FQDN:    fqdn,
+			Type:    dns.TypeA,
+			TTL:     30,
+			Content: dbRecordContent{IP: net.ParseIP(nodeIPAddress)},
+		})
+
+		// Cluster leader CNAME: `leader.<cluster>.<datacenter>.<organization zone>`
+		if nodeID == clusterLeaderNodeID {
+			leaderFQDN := dns.Fqdn(fmt.Sprintf("leader.%s.%s.%s", clusterDNSLabel, datacenterDNSLabel, zone))
+			nodeFQDN := dns.Fqdn(fmt.Sprintf("%s.%s.%s.%s", nodeDNSLabel, clusterDNSLabel, datacenterDNSLabel, zone))
+
+			records = append(records, dbRecord{
+				FQDN:    leaderFQDN,
+				Type:    dns.TypeCNAME,
+				TTL:     30,
+				Content: dbRecordContent{CNAME: nodeFQDN},
+			})
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return records, nil
+}
+
+func (p *PcePlugin) lookupRecords(ctx context.Context, zone, name string, qtype uint16) ([]dbRecord, error) {
+	records, err := p.loadNodeRecords(ctx, zone)
+	if err != nil {
+		return nil, err
+	}
+	clusterRecords, err := p.loadClusterRecords(ctx, zone)
+	if err != nil {
+		return nil, err
+	}
+	records = append(records, clusterRecords...)
+
+	nameFqdn := dns.Fqdn(name)
+	var filtered []dbRecord
+
+	// Find matches based on FQDN and query type
+	for _, record := range records {
+		if record.FQDN != nameFqdn {
+			continue
+		}
+
+		if qtype == dns.TypeANY || record.Type == qtype {
+			// Match type if not ANY
+			filtered = append(filtered, record)
+		} else if (qtype == dns.TypeA || qtype == dns.TypeAAAA) && record.Type == dns.TypeCNAME {
+			// Special case: include CNAME records when querying A/AAAA
+			filtered = append(filtered, record)
+		}
+	}
+	return filtered, nil
 }

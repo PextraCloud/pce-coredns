@@ -16,8 +16,6 @@ limitations under the License.
 package pce_coredns
 
 import (
-	"strconv"
-
 	"github.com/coredns/caddy"
 	"github.com/coredns/coredns/core/dnsserver"
 	"github.com/coredns/coredns/plugin"
@@ -42,20 +40,6 @@ func parseConfig(c *caddy.Controller) (*PcePlugin, error) {
 					return nil, c.ArgErr()
 				}
 				pcePlugin.DataSource = c.Val()
-			case "table":
-				if !c.NextArg() {
-					return nil, c.ArgErr()
-				}
-				pcePlugin.TableName = c.Val()
-			case "ttl":
-				if !c.NextArg() {
-					return nil, c.ArgErr()
-				}
-				ttl, err := strconv.Atoi(c.Val())
-				if err != nil {
-					return nil, c.Errf("invalid ttl value: %v", err)
-				}
-				pcePlugin.DefaultTTL = uint32(ttl)
 			case "fallthrough":
 				pcePlugin.setFallthroughZones(c.RemainingArgs())
 			default:

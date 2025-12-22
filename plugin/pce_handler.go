@@ -39,7 +39,7 @@ func (p *PcePlugin) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.M
 		return plugin.NextOrFailure(p.Name(), p.Next, ctx, w, r)
 	}
 
-	qType := state.Type()
+	qType := state.QType()
 	// Lookup records in db
 	records, err := p.lookupRecords(ctx, qZone, qName, qType)
 	if err != nil {
@@ -58,7 +58,7 @@ func (p *PcePlugin) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.M
 	}
 
 	// Convert to DNS RRs and send response
-	answers, rcode, err := recordsToRRs(records, p.DefaultTTL)
+	answers, rcode, err := recordsToRRs(records)
 	if err != nil {
 		return errResponse(state, rcode, err)
 	}

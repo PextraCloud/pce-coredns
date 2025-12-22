@@ -30,11 +30,6 @@ type PcePlugin struct {
 
 	// DataSource is the database connection string
 	DataSource string
-	// TableName is the name of the table containing DNS records
-	TableName string
-	// DefaultTTL is the default TTL for DNS records without a specified TTL,
-	// in seconds
-	DefaultTTL uint32
 
 	// fallthroughZones is the list of zones for which queries should be
 	// passed to the next plugin if no records are found
@@ -54,12 +49,6 @@ func (p *PcePlugin) Name() string { return PluginName }
 func (p *PcePlugin) ValidateConfig() error {
 	if p.DataSource == "" {
 		return fmt.Errorf("datasource must be specified for %s plugin", PluginName)
-	}
-	if p.TableName == "" {
-		return fmt.Errorf("table name must be specified for %s plugin", PluginName)
-	}
-	if p.DefaultTTL <= 0 {
-		return fmt.Errorf("default_ttl must be a positive integer for %s plugin", PluginName)
 	}
 	return nil
 }
