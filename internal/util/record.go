@@ -13,7 +13,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-package pce_coredns
+package util
 
 import (
 	"fmt"
@@ -22,13 +22,13 @@ import (
 	"github.com/miekg/dns"
 )
 
-type dbRecord struct {
+type Record struct {
 	FQDN    string
 	Type    uint16
 	TTL     uint32
-	Content dbRecordContent
+	Content RecordContent
 }
-type dbRecordContent struct {
+type RecordContent struct {
 	// A/AAAA fields
 	IP net.IP
 
@@ -57,19 +57,19 @@ func splitTxtData(content string) []string {
 	return result
 }
 
-func (dbr *dbRecord) AsARecord() (dns.RR, error) {
+func (r *Record) AsARecord() (dns.RR, error) {
 	rr := &dns.A{
 		Hdr: dns.RR_Header{
-			Name:   dbr.FQDN,
+			Name:   r.FQDN,
 			Rrtype: dns.TypeA,
 			Class:  dns.ClassINET,
-			Ttl:    dbr.TTL,
+			Ttl:    r.TTL,
 		},
-		A: dbr.Content.IP,
+		A: r.Content.IP,
 	}
 	return rr, nil
 }
-func (r *dbRecord) AsAAAARecord() (dns.RR, error) {
+func (r *Record) AsAAAARecord() (dns.RR, error) {
 	rr := &dns.AAAA{
 		Hdr: dns.RR_Header{
 			Name:   r.FQDN,
@@ -81,7 +81,7 @@ func (r *dbRecord) AsAAAARecord() (dns.RR, error) {
 	}
 	return rr, nil
 }
-func (r *dbRecord) AsCNAMERecord() (dns.RR, error) {
+func (r *Record) AsCNAMERecord() (dns.RR, error) {
 	rr := &dns.CNAME{
 		Hdr: dns.RR_Header{
 			Name:   r.FQDN,
@@ -93,7 +93,7 @@ func (r *dbRecord) AsCNAMERecord() (dns.RR, error) {
 	}
 	return rr, nil
 }
-func (r *dbRecord) AsSRVRecord() (dns.RR, error) {
+func (r *Record) AsSRVRecord() (dns.RR, error) {
 	rr := &dns.SRV{
 		Hdr: dns.RR_Header{
 			Name:   r.FQDN,
@@ -108,7 +108,7 @@ func (r *dbRecord) AsSRVRecord() (dns.RR, error) {
 	}
 	return rr, nil
 }
-func (r *dbRecord) AsTXTRecord() (dns.RR, error) {
+func (r *Record) AsTXTRecord() (dns.RR, error) {
 	rr := &dns.TXT{
 		Hdr: dns.RR_Header{
 			Name:   r.FQDN,
@@ -121,7 +121,7 @@ func (r *dbRecord) AsTXTRecord() (dns.RR, error) {
 	return rr, nil
 }
 
-func recordToRR(record *dbRecord) (dns.RR, error) {
+func recordToRR(record *Record) (dns.RR, error) {
 	switch record.Type {
 	case dns.TypeA:
 		return record.AsARecord()
@@ -138,7 +138,7 @@ func recordToRR(record *dbRecord) (dns.RR, error) {
 	}
 }
 
-func recordsToRRs(records []dbRecord) ([]dns.RR, int, error) {
+func RecordsToRRs(records []Record) ([]dns.RR, int, error) {
 	answers := make([]dns.RR, 0, len(records))
 	for _, record := range records {
 		rr, err := recordToRR(&record)

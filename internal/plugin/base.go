@@ -13,45 +13,35 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-package pce_coredns
+package pce
 
 import (
-	"database/sql"
-	"fmt"
-
+	"github.com/PextraCloud/pce-coredns/internal/db"
+	"github.com/PextraCloud/pce-coredns/internal/log"
+	"github.com/PextraCloud/pce-coredns/internal/static"
 	"github.com/coredns/coredns/plugin"
 )
-
-const PluginName = "pce"
 
 type PcePlugin struct {
 	// Next is the next plugin in the chain
 	Next plugin.Handler
 
-	// DataSource is the database connection string
-	DataSource string
+	// sql plugin serves from a PCE database
+	db *db.Plugin
+	// static plugin serves from a static PCE config
+	static *static.Plugin
 
 	// fallthroughZones is the list of zones for which queries should be
 	// passed to the next plugin if no records are found
 	fallthroughZones []string
 	// zones is the list of zones this plugin will handle
 	zones []string
-
-	// db is the database connection pool
-	db *sql.DB
 }
 
 // comp-time check: PcePlugin implements plugin.Handler
 var _ plugin.Handler = (*PcePlugin)(nil)
 
-func (p *PcePlugin) Name() string { return PluginName }
-
-func (p *PcePlugin) ValidateConfig() error {
-	if p.DataSource == "" {
-		return fmt.Errorf("datasource must be specified for %s plugin", PluginName)
-	}
-	return nil
-}
+func (p *PcePlugin) Name() string { return log.PluginName }
 
 func (p *PcePlugin) setFallthroughZones(zones []string) {
 	// If no zones are specified, default to the root zone
@@ -64,14 +54,6 @@ func (p *PcePlugin) setFallthroughZones(zones []string) {
 		res = append(res, plugin.Host(zone).NormalizeExact()...)
 	}
 	p.fallthroughZones = res
-}
-
-func (p *PcePlugin) setZones(zones []string) {
-	res := []string{}
-	for _, zone := range zones {
-		res = append(res, plugin.Host(zone).NormalizeExact()...)
-	}
-	p.zones = res
 }
 
 func (p *PcePlugin) canFallthrough(qName string) bool {

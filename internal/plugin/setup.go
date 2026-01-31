@@ -13,25 +13,27 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-package pce_coredns
+package pce
 
 import (
+	"github.com/PextraCloud/pce-coredns/internal/db"
+	"github.com/PextraCloud/pce-coredns/internal/log"
+	"github.com/PextraCloud/pce-coredns/internal/static"
 	"github.com/coredns/caddy"
 	"github.com/coredns/coredns/core/dnsserver"
 	"github.com/coredns/coredns/plugin"
 )
 
-func init() {
-	caddy.RegisterPlugin(PluginName, caddy.Plugin{
-		ServerType: "dns",
-		Action:     setup,
-	})
-}
-
 func parseConfig(c *caddy.Controller) (*PcePlugin, error) {
 	c.Next() // skip the PluginName token
 
-	pcePlugin := &PcePlugin{}
+	s := static.NewPlugin()
+	d := db.NewPlugin()
+
+	pcePlugin := &PcePlugin{
+		db:     d,
+		static: s,
+	}
 	if c.NextBlock() {
 		for {
 			switch c.Val() {
@@ -39,13 +41,13 @@ func parseConfig(c *caddy.Controller) (*PcePlugin, error) {
 				if !c.NextArg() {
 					return nil, c.ArgErr()
 				}
-				pcePlugin.DataSource = c.Val()
+				pcePlugin.db.DataSource = c.Val()
 			case "fallthrough":
 				pcePlugin.setFallthroughZones(c.RemainingArgs())
 			default:
 				// Handle unexpected tokens
 				if c.Val() != "}" {
-					return nil, c.Errf("unknown property '%s' for %s plugin", c.Val(), PluginName)
+					return nil, c.Errf("unknown property '%s' for %s plugin", c.Val(), log.PluginName)
 				}
 			}
 
@@ -55,19 +57,25 @@ func parseConfig(c *caddy.Controller) (*PcePlugin, error) {
 		}
 	}
 
-	// Validate configuration
-	if err := pcePlugin.ValidateConfig(); err != nil {
-		return nil, err
-	}
 	// Attempt to connect to db
-	if err := pcePlugin.Connect(); err != nil {
-		return nil, err
-	}
+	pcePlugin.db.Connect()
+	// Start static plugin
+	pcePlugin.static.Start()
 
+	// Cleanup on shutdown
+	c.OnShutdown(func() error {
+		if pcePlugin.db != nil {
+			return pcePlugin.db.Close()
+		}
+		if pcePlugin.static != nil {
+			return pcePlugin.static.Close()
+		}
+		return nil
+	})
 	return pcePlugin, nil
 }
 
-func setup(c *caddy.Controller) error {
+func Setup(c *caddy.Controller) error {
 	pce, err := parseConfig(c)
 	if err != nil {
 		return err
@@ -78,6 +86,5 @@ func setup(c *caddy.Controller) error {
 		pce.Next = next
 		return pce
 	})
-
 	return nil
 }

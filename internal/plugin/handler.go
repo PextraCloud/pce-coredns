@@ -13,11 +13,12 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-package pce_coredns
+package pce
 
 import (
 	"context"
 
+	"github.com/PextraCloud/pce-coredns/internal/util"
 	"github.com/coredns/coredns/plugin"
 	"github.com/coredns/coredns/request"
 	"github.com/miekg/dns"
@@ -26,44 +27,47 @@ import (
 func (p *PcePlugin) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
 	state := request.Request{W: w, Req: r}
 	qName := state.Name()
-
-	// Load zones
-	if err := p.loadZones(ctx); err != nil {
-		return errResponse(state, dns.RcodeServerFailure, err)
-	}
-
-	// Get most specific matching zone (if any)
-	qZone := plugin.Zones(p.zones).Matches(qName)
-	if qZone == "" {
-		// Fallthrough to next plugin
-		return plugin.NextOrFailure(p.Name(), p.Next, ctx, w, r)
-	}
-
 	qType := state.QType()
-	// Lookup records in db
-	records, err := p.lookupRecords(ctx, qZone, qName, qType)
-	if err != nil {
-		return errResponse(state, dns.RcodeServerFailure, err)
-	}
 
-	// No records found
-	if len(records) == 0 {
-		// Only fallthrough if config allows it for this zone
-		canFallthrough := p.canFallthrough(qZone)
-		if canFallthrough {
-			return plugin.NextOrFailure(p.Name(), p.Next, ctx, w, r)
-		} else {
-			return errResponse(state, dns.RcodeNameError, nil)
+	tryServe := func(records []util.Record, err error) (int, error) {
+		if err != nil {
+			return errResponse(state, dns.RcodeServerFailure, err)
 		}
+		// If records found, return them
+		if len(records) > 0 {
+			answers, rcode, err := util.RecordsToRRs(records)
+			if err != nil {
+				return errResponse(state, rcode, err)
+			}
+			return successResponse(state, answers)
+		}
+		return -1, nil // indicate no records found
 	}
 
-	// Convert to DNS RRs and send response
-	answers, rcode, err := recordsToRRs(records)
-	if err != nil {
-		return errResponse(state, rcode, err)
+	// Load static records
+	records, err := p.static.LookupRecords(ctx, qName, qType)
+	tryServeResult, err := tryServe(records, err)
+	if tryServeResult != -1 {
+		return tryServeResult, err
 	}
 
-	return successResponse(state, answers)
+	// Load dynamic records from DB
+	records, err = p.db.LookupRecords(ctx, qName, qType)
+	tryServeResult, err = tryServe(records, err)
+	if tryServeResult != -1 {
+		return tryServeResult, err
+	}
+
+	// No records found in either static or DB, handle fallthrough
+	// Fallthrough: only if config allows it for this zone
+	// TODO: we don't populate p.zones anywhere, need to fix that.
+	qZone := plugin.Zones(p.zones).Matches(qName)
+	canFallthrough := p.canFallthrough(qZone)
+	if canFallthrough {
+		return plugin.NextOrFailure(p.Name(), p.Next, ctx, w, r)
+	} else {
+		return errResponse(state, dns.RcodeNameError, nil)
+	}
 }
 
 func errResponse(state request.Request, rcode int, err error) (int, error) {
