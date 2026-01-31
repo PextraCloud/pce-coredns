@@ -25,6 +25,8 @@ import (
 	"github.com/miekg/dns"
 )
 
+const zoneSuffix = "bootstrap.pce.internal."
+
 type staticFile struct {
 	Version string `json:"version"`
 	// id -> IP address
@@ -57,7 +59,7 @@ func parseStaticFile(file *os.File, ttl uint32) ([]util.Record, error) {
 			recType = dns.TypeAAAA
 		}
 		record := util.Record{
-			FQDN: dns.Fqdn(nodeId),
+			FQDN: dns.Fqdn(nodeId + "." + zoneSuffix),
 			Type: recType,
 			TTL:  ttl,
 			Content: util.RecordContent{
