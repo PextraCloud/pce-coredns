@@ -26,6 +26,7 @@ import (
 
 func parseConfig(c *caddy.Controller) (*PcePlugin, error) {
 	c.Next() // skip the PluginName token
+	log.Log.Debugf("config: parsing %s plugin", log.PluginName)
 
 	s := static.NewPlugin()
 	d := db.NewPlugin()
@@ -61,9 +62,11 @@ func parseConfig(c *caddy.Controller) (*PcePlugin, error) {
 	pcePlugin.db.Connect()
 	// Start static plugin
 	pcePlugin.static.Start()
+	log.Log.Debugf("config: %s plugin initialized", log.PluginName)
 
 	// Cleanup on shutdown
 	c.OnShutdown(func() error {
+		log.Log.Debugf("shutdown: %s plugin stopping", log.PluginName)
 		if pcePlugin.db != nil {
 			return pcePlugin.db.Close()
 		}

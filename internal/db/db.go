@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"net"
 
+	ilog "github.com/PextraCloud/pce-coredns/internal/log"
 	"github.com/PextraCloud/pce-coredns/internal/util"
 	"github.com/miekg/dns"
 )
@@ -57,8 +58,15 @@ func getFqdnsForNode(nodeId string, roles []string, isDefault bool) []string {
 }
 
 func (p *Plugin) loadNodeRecords(ctx context.Context) ([]util.Record, error) {
+	if p.db == nil {
+		ilog.Log.Warningf("db: lookup requested with no active connection")
+		return nil, fmt.Errorf("db connection not initialized")
+	}
+
+	ilog.Log.Debugf("db: loading node records")
 	rows, err := p.db.QueryContext(ctx, nodeRecordsQuery)
 	if err != nil {
+		ilog.Log.Errorf("db: failed to query node records: %v", err)
 		return nil, err
 	}
 	defer rows.Close()
@@ -72,6 +80,7 @@ func (p *Plugin) loadNodeRecords(ctx context.Context) ([]util.Record, error) {
 		var roles []string
 
 		if err := rows.Scan(&nodeId, &address, &addressFamily, &isDefault, &roles); err != nil {
+			ilog.Log.Errorf("db: failed to scan node record: %v", err)
 			return nil, err
 		}
 
@@ -100,19 +109,30 @@ func (p *Plugin) loadNodeRecords(ctx context.Context) ([]util.Record, error) {
 				})
 			}
 		default:
+			ilog.Log.Warningf("db: unknown address family %q for node %q", addressFamily, nodeId)
 			return nil, fmt.Errorf("unknown address family %q for node %q", addressFamily, nodeId)
 		}
 	}
 
 	if err := rows.Err(); err != nil {
+		ilog.Log.Errorf("db: rows error while loading records: %v", err)
 		return nil, err
 	}
+
+	ilog.Log.Debugf("db: loaded %d record(s)", len(records))
 	return records, nil
 }
 
 func (p *Plugin) LookupRecords(ctx context.Context, name string, qtype uint16) ([]util.Record, error) {
+	typeName := dns.TypeToString[qtype]
+	if typeName == "" {
+		typeName = fmt.Sprintf("%d", qtype)
+	}
+	ilog.Log.Debugf("db: lookup name=%q qtype=%s", name, typeName)
+
 	records, err := p.loadNodeRecords(ctx)
 	if err != nil {
+		ilog.Log.Errorf("db: failed to load records for %q: %v", name, err)
 		return nil, err
 	}
 
@@ -133,5 +153,7 @@ func (p *Plugin) LookupRecords(ctx context.Context, name string, qtype uint16) (
 			filtered = append(filtered, record)
 		}
 	}
+
+	ilog.Log.Debugf("db: lookup matched %d record(s) for name=%q", len(filtered), name)
 	return filtered, nil
 }

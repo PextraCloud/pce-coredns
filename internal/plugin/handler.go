@@ -18,6 +18,7 @@ package pce
 import (
 	"context"
 
+	"github.com/PextraCloud/pce-coredns/internal/log"
 	"github.com/PextraCloud/pce-coredns/internal/util"
 	"github.com/coredns/coredns/plugin"
 	"github.com/coredns/coredns/request"
@@ -29,31 +30,40 @@ func (p *PcePlugin) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.M
 	qName := state.Name()
 	qType := state.QType()
 
-	tryServe := func(records []util.Record, err error) (int, error) {
+	typeName := dns.TypeToString[qType]
+	if typeName == "" {
+		typeName = "UNKNOWN"
+	}
+	log.Log.Debugf("request: name=%q type=%s from=%s", qName, typeName, state.IP())
+
+	tryServe := func(source string, records []util.Record, err error) (int, error) {
 		if err != nil {
+			log.Log.Errorf("%s: lookup failed for name=%q type=%s: %v", source, qName, typeName, err)
 			return errResponse(state, dns.RcodeServerFailure, err)
 		}
 		// If records found, return them
 		if len(records) > 0 {
+			log.Log.Debugf("%s: matched %d record(s) for name=%q", source, len(records), qName)
 			answers, rcode, err := util.RecordsToRRs(records)
 			if err != nil {
 				return errResponse(state, rcode, err)
 			}
 			return successResponse(state, answers)
 		}
+		log.Log.Debugf("%s: no records for name=%q", source, qName)
 		return -1, nil // indicate no records found
 	}
 
 	// Load static records
 	records, err := p.static.LookupRecords(ctx, qName, qType)
-	tryServeResult, err := tryServe(records, err)
+	tryServeResult, err := tryServe("static", records, err)
 	if tryServeResult != -1 {
 		return tryServeResult, err
 	}
 
 	// Load dynamic records from DB
 	records, err = p.db.LookupRecords(ctx, qName, qType)
-	tryServeResult, err = tryServe(records, err)
+	tryServeResult, err = tryServe("db", records, err)
 	if tryServeResult != -1 {
 		return tryServeResult, err
 	}
@@ -64,8 +74,10 @@ func (p *PcePlugin) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.M
 	qZone := plugin.Zones(p.zones).Matches(qName)
 	canFallthrough := p.canFallthrough(qZone)
 	if canFallthrough {
+		log.Log.Debugf("fallthrough: passing to next plugin for name=%q", qName)
 		return plugin.NextOrFailure(p.Name(), p.Next, ctx, w, r)
 	} else {
+		log.Log.Debugf("nxdomain: no records for name=%q", qName)
 		return errResponse(state, dns.RcodeNameError, nil)
 	}
 }
