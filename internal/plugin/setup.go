@@ -43,8 +43,6 @@ func parseConfig(c *caddy.Controller) (*PcePlugin, error) {
 					return nil, c.ArgErr()
 				}
 				pcePlugin.db.DataSource = c.Val()
-			case "fallthrough":
-				pcePlugin.setFallthroughZones(c.RemainingArgs())
 			default:
 				// Handle unexpected tokens
 				if c.Val() != "}" {

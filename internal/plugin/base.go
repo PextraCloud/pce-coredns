@@ -16,9 +16,12 @@ limitations under the License.
 package pce
 
 import (
+	"errors"
+
 	"github.com/PextraCloud/pce-coredns/internal/db"
 	"github.com/PextraCloud/pce-coredns/internal/log"
 	"github.com/PextraCloud/pce-coredns/internal/static"
+	"github.com/PextraCloud/pce-coredns/internal/util"
 	"github.com/coredns/coredns/plugin"
 )
 
@@ -30,12 +33,6 @@ type PcePlugin struct {
 	db *db.Plugin
 	// static plugin serves from a static PCE config
 	static *static.Plugin
-
-	// fallthroughZones is the list of zones for which queries should be
-	// passed to the next plugin if no records are found
-	fallthroughZones []string
-	// zones is the list of zones this plugin will handle
-	zones []string
 }
 
 // comp-time check: PcePlugin implements plugin.Handler
@@ -43,19 +40,18 @@ var _ plugin.Handler = (*PcePlugin)(nil)
 
 func (p *PcePlugin) Name() string { return log.PluginName }
 
-func (p *PcePlugin) setFallthroughZones(zones []string) {
-	// If no zones are specified, default to the root zone
-	if len(zones) == 0 {
-		zones = []string{"."}
-	}
-
-	res := []string{}
-	for _, zone := range zones {
-		res = append(res, plugin.Host(zone).NormalizeExact()...)
-	}
-	p.fallthroughZones = res
+// zones returns the zones that this plugin is authoritative for
+func (p *PcePlugin) zones() []string {
+	return util.ZonesList
 }
 
-func (p *PcePlugin) canFallthrough(qName string) bool {
-	return plugin.Zones(p.fallthroughZones).Matches(qName) != ""
+func (p *PcePlugin) adapterFromZone(zone string) (util.Adapter, error) {
+	switch zone {
+	case util.ZoneDynamic:
+		return p.db, nil
+	case util.ZoneBootstrap:
+		return p.static, nil
+	default:
+		return nil, errors.New("unknown zone: " + zone)
+	}
 }

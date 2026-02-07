@@ -54,6 +54,9 @@ func NewPlugin() *Plugin {
 	}
 }
 
+// comp-time check: Plugin implements util.Adapter
+var _ util.Adapter = (*Plugin)(nil)
+
 func (p *Plugin) Start() {
 	if p.loop != nil {
 		// Already started
@@ -61,7 +64,7 @@ func (p *Plugin) Start() {
 	}
 
 	if p.Path == "" {
-		ilog.Log.Fatalf("static: no path to static config file provided")
+		ilog.Log.Errorf("static: no path to static config file provided")
 		return
 	}
 	if p.TTL == 0 {
@@ -70,6 +73,8 @@ func (p *Plugin) Start() {
 	}
 	if p.Interval <= 0 {
 		ilog.Log.Warningf("static: invalid refresh interval, skipping periodic reload")
+		// Run once
+		p.ReadStatic()
 		return
 	}
 
@@ -108,10 +113,10 @@ func (p *Plugin) LookupRecords(ctx context.Context, name string, qtype uint16) (
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
-	nameFqdn := dns.Fqdn(name)
+	nameFqdn := dns.CanonicalName(name)
 	// Find matches based on FQDN and query type
 	for _, record := range p.records {
-		if record.FQDN != nameFqdn {
+		if dns.CanonicalName(record.FQDN) != nameFqdn {
 			continue
 		}
 

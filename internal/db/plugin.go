@@ -20,6 +20,7 @@ import (
 	"time"
 
 	ilog "github.com/PextraCloud/pce-coredns/internal/log"
+	"github.com/PextraCloud/pce-coredns/internal/util"
 	_ "github.com/lib/pq"
 )
 
@@ -28,7 +29,12 @@ type Plugin struct {
 	DataSource string
 	// db is the database connection pool
 	db *sql.DB
+	// lastConnectAttempt is used to throttle reconnect attempts
+	lastConnectAttempt time.Time
 }
+
+// comp-time check: Plugin implements util.Adapter
+var _ util.Adapter = (*Plugin)(nil)
 
 func NewPlugin() *Plugin {
 	return &Plugin{}
@@ -38,6 +44,12 @@ func NewPlugin() *Plugin {
 var sqlOpen = sql.Open
 
 func (p *Plugin) Connect() {
+	// Avoid rapid reconnection attempts
+	if time.Since(p.lastConnectAttempt) < 2*time.Second {
+		return
+	}
+	p.lastConnectAttempt = time.Now()
+
 	if p.DataSource == "" {
 		ilog.Log.Warningf("db: no datasource provided, skipping database connection")
 		return
@@ -53,6 +65,7 @@ func (p *Plugin) Connect() {
 	// Test db connection, don't close on failure, it will be retried later
 	if err := db.Ping(); err != nil {
 		ilog.Log.Warningf("db: failed to ping database: %v", err)
+		_ = db.Close()
 		return
 	}
 

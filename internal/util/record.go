@@ -89,7 +89,7 @@ func (r *Record) AsCNAMERecord() (dns.RR, error) {
 			Class:  dns.ClassINET,
 			Ttl:    r.TTL,
 		},
-		Target: dns.Fqdn(r.Content.CNAME),
+		Target: dns.CanonicalName(r.Content.CNAME),
 	}
 	return rr, nil
 }
@@ -104,7 +104,7 @@ func (r *Record) AsSRVRecord() (dns.RR, error) {
 		Priority: r.Content.Priority,
 		Weight:   r.Content.Weight,
 		Port:     r.Content.Port,
-		Target:   dns.Fqdn(r.Content.Target),
+		Target:   dns.CanonicalName(r.Content.Target),
 	}
 	return rr, nil
 }
@@ -138,14 +138,14 @@ func recordToRR(record *Record) (dns.RR, error) {
 	}
 }
 
-func RecordsToRRs(records []Record) ([]dns.RR, int, error) {
+func RecordsToRRs(records []Record) ([]dns.RR, error) {
 	answers := make([]dns.RR, 0, len(records))
 	for _, record := range records {
 		rr, err := recordToRR(&record)
 		if err != nil {
-			return nil, dns.RcodeServerFailure, err
+			return nil, err
 		}
 		answers = append(answers, rr)
 	}
-	return answers, dns.RcodeSuccess, nil
+	return answers, nil
 }

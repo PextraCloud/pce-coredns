@@ -29,57 +29,48 @@ func (p *PcePlugin) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.M
 	state := request.Request{W: w, Req: r}
 	qName := state.Name()
 	qType := state.QType()
+	qTypeStr := state.Type()
 
-	typeName := dns.TypeToString[qType]
-	if typeName == "" {
-		typeName = "UNKNOWN"
+	// Check if name matches a zone we are authoritative for
+	zone := plugin.Zones(p.zones()).Matches(qName)
+	if zone == "" {
+		log.Log.Debugf("zone not found for query name=%q, passing to next plugin", qName)
+		return plugin.NextOrFailure(p.Name(), p.Next, ctx, w, r)
 	}
-	log.Log.Debugf("request: name=%q type=%s from=%s", qName, typeName, state.IP())
 
-	tryServe := func(source string, records []util.Record, err error) (int, error) {
-		if err != nil {
-			log.Log.Errorf("%s: lookup failed for name=%q type=%s: %v", source, qName, typeName, err)
+	var records []util.Record
+	var err error
+
+	adapter, err := p.adapterFromZone(zone)
+	if err != nil {
+		// This should never happen, since we only match zones we are authoritative for
+		log.Log.Errorf("failed to get adapter for zone %q: %v", zone, err)
+		// SERVFAIL
+		return errResponse(state, dns.RcodeServerFailure, err)
+	}
+	if records, err = adapter.LookupRecords(ctx, qName, qType); err != nil {
+		log.Log.Errorf("lookup failed for name=%q type=%s: %v", qName, qTypeStr, err)
+		// SERVFAIL
+		return errResponse(state, dns.RcodeServerFailure, err)
+	}
+
+	hasRecords := len(records) > 0
+	if hasRecords {
+		log.Log.Debugf("found %d record(s) for name=%q type=%s", len(records), qName, qTypeStr)
+		var answers []dns.RR
+		if answers, err = util.RecordsToRRs(records); err != nil {
+			log.Log.Errorf("failed to convert records to RRs for name=%q type=%s: %v", qName, qTypeStr, err)
+			// SERVFAIL
 			return errResponse(state, dns.RcodeServerFailure, err)
 		}
-		// If records found, return them
-		if len(records) > 0 {
-			log.Log.Debugf("%s: matched %d record(s) for name=%q", source, len(records), qName)
-			answers, rcode, err := util.RecordsToRRs(records)
-			if err != nil {
-				return errResponse(state, rcode, err)
-			}
-			return successResponse(state, answers)
-		}
-		log.Log.Debugf("%s: no records for name=%q", source, qName)
-		return -1, nil // indicate no records found
+
+		// SUCCESS
+		return successResponse(state, answers)
 	}
 
-	// Load static records
-	records, err := p.static.LookupRecords(ctx, qName, qType)
-	tryServeResult, err := tryServe("static", records, err)
-	if tryServeResult != -1 {
-		return tryServeResult, err
-	}
-
-	// Load dynamic records from DB
-	records, err = p.db.LookupRecords(ctx, qName, qType)
-	tryServeResult, err = tryServe("db", records, err)
-	if tryServeResult != -1 {
-		return tryServeResult, err
-	}
-
-	// No records found in either static or DB, handle fallthrough
-	// Fallthrough: only if config allows it for this zone
-	// TODO: we don't populate p.zones anywhere, need to fix that.
-	qZone := plugin.Zones(p.zones).Matches(qName)
-	canFallthrough := p.canFallthrough(qZone)
-	if canFallthrough {
-		log.Log.Debugf("fallthrough: passing to next plugin for name=%q", qName)
-		return plugin.NextOrFailure(p.Name(), p.Next, ctx, w, r)
-	} else {
-		log.Log.Debugf("nxdomain: no records for name=%q", qName)
-		return errResponse(state, dns.RcodeNameError, nil)
-	}
+	log.Log.Debugf("no records found for name=%q type=%s", qName, qTypeStr)
+	// NXDOMAIN
+	return errResponse(state, dns.RcodeNameError, nil)
 }
 
 func errResponse(state request.Request, rcode int, err error) (int, error) {

@@ -17,101 +17,72 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"net"
 
 	ilog "github.com/PextraCloud/pce-coredns/internal/log"
 	"github.com/PextraCloud/pce-coredns/internal/util"
+	"github.com/lib/pq"
 	"github.com/miekg/dns"
 )
 
-const zoneSuffix = "pce.internal."
-
 const nodeRecordsQuery = `SELECT
 	node_addresses.node_id,
-	host(node_addresses.address) AS address,
-	family(node_addresses.address) AS address_family,
+	HOST(node_addresses.address) AS address,
+	FAMILY(node_addresses.address) AS address_family,
 	node_addresses.is_default,
-	array_agg(node_address_roles.role) AS address_roles
+	COALESCE(ARRAY_REMOVE(ARRAY_AGG(node_address_roles.role), NULL), ARRAY[]::text[]) AS address_roles
 FROM node_addresses
-	INNER JOIN nodes ON node_addresses.node_id = nodes.id
-	INNER JOIN node_address_roles ON node_addresses.id = node_address_roles.node_address_id
-WHERE
-	nodes.alive = true
-	AND nodes.last_seen >= NOW() - INTERVAL '60 seconds'
+	LEFT JOIN node_address_roles ON node_addresses.id = node_address_roles.node_address_id
 GROUP BY
 	node_addresses.node_id,
-	node_addresses.address,
+	address,
+	address_family,
 	node_addresses.is_default;`
 
-func getFqdnsForNode(nodeId string, roles []string, isDefault bool) []string {
+type nodeRecord struct {
+	Address       string
+	AddressFamily string
+	IsDefault     bool
+	Roles         []string
+}
+type defaultAddressMapV struct {
+	Address       string
+	AddressFamily string
+}
+
+func getFqdnsForNode(nodeId string, roles []string) []string {
 	fqdns := []string{}
-	if isDefault {
-		// <nodeId>.pce.internal.
-		fqdns = append(fqdns, dns.Fqdn(fmt.Sprintf("%s.%s", nodeId, zoneSuffix)))
-	}
 	for _, role := range roles {
 		// <nodeId>-<role>.pce.internal.
-		fqdns = append(fqdns, dns.Fqdn(fmt.Sprintf("%s-%s.%s", nodeId, role, zoneSuffix)))
+		fqdns = append(fqdns, dns.CanonicalName(fmt.Sprintf("%s-%s.%s", nodeId, role, util.ZoneDynamic)))
 	}
 	return fqdns
 }
 
 func (p *Plugin) loadNodeRecords(ctx context.Context) ([]util.Record, error) {
 	if p.db == nil {
-		ilog.Log.Warningf("db: lookup requested with no active connection")
+		p.Connect()
+	}
+	if p.db == nil {
 		return nil, fmt.Errorf("db connection not initialized")
 	}
 
-	ilog.Log.Debugf("db: loading node records")
-	rows, err := p.db.QueryContext(ctx, nodeRecordsQuery)
+	rows, err := p.queryNodeRecords(ctx)
 	if err != nil {
-		ilog.Log.Errorf("db: failed to query node records: %v", err)
 		return nil, err
 	}
 	defer rows.Close()
 
-	records := []util.Record{}
-	for rows.Next() {
-		var nodeId string
-		var address string
-		var addressFamily string
-		var isDefault bool
-		var roles []string
+	nodeRecordsMap, defaultAddressMap, err := scanNodeRecords(rows)
+	if err != nil {
+		return nil, err
+	}
 
-		if err := rows.Scan(&nodeId, &address, &addressFamily, &isDefault, &roles); err != nil {
-			ilog.Log.Errorf("db: failed to scan node record: %v", err)
-			return nil, err
-		}
-
-		fqdns := getFqdnsForNode(nodeId, roles, isDefault)
-		switch addressFamily {
-		case "4":
-			for _, fqdn := range fqdns {
-				records = append(records, util.Record{
-					FQDN: fqdn,
-					Type: dns.TypeA,
-					TTL:  30,
-					Content: util.RecordContent{
-						IP: net.ParseIP(address),
-					},
-				})
-			}
-		case "6":
-			for _, fqdn := range fqdns {
-				records = append(records, util.Record{
-					FQDN: fqdn,
-					Type: dns.TypeAAAA,
-					TTL:  30,
-					Content: util.RecordContent{
-						IP: net.ParseIP(address),
-					},
-				})
-			}
-		default:
-			ilog.Log.Warningf("db: unknown address family %q for node %q", addressFamily, nodeId)
-			return nil, fmt.Errorf("unknown address family %q for node %q", addressFamily, nodeId)
-		}
+	records, err := buildDNSRecords(nodeRecordsMap, defaultAddressMap)
+	if err != nil {
+		return nil, err
 	}
 
 	if err := rows.Err(); err != nil {
@@ -123,25 +94,133 @@ func (p *Plugin) loadNodeRecords(ctx context.Context) ([]util.Record, error) {
 	return records, nil
 }
 
-func (p *Plugin) LookupRecords(ctx context.Context, name string, qtype uint16) ([]util.Record, error) {
-	typeName := dns.TypeToString[qtype]
-	if typeName == "" {
-		typeName = fmt.Sprintf("%d", qtype)
+func (p *Plugin) queryNodeRecords(ctx context.Context) (*sql.Rows, error) {
+	rows, err := p.db.QueryContext(ctx, nodeRecordsQuery)
+	if err != nil {
+		ilog.Log.Errorf("db: failed to query node records: %v", err)
+		return nil, err
 	}
-	ilog.Log.Debugf("db: lookup name=%q qtype=%s", name, typeName)
+	return rows, nil
+}
 
+func scanNodeRecords(rows *sql.Rows) (map[string][]nodeRecord, map[string]defaultAddressMapV, error) {
+	// `nodeId` -> `[]nodeRecord`
+	nodeRecordsMap := make(map[string][]nodeRecord)
+	// `nodeId` -> `defaultAddressMapV`
+	defaultAddressMap := make(map[string]defaultAddressMapV)
+
+	for rows.Next() {
+		var nodeId string
+		r := nodeRecord{}
+		if err := rows.Scan(&nodeId, &r.Address, &r.AddressFamily, &r.IsDefault, pq.Array(&r.Roles)); err != nil {
+			ilog.Log.Errorf("db: failed to scan node record: %v", err)
+			return nil, nil, err
+		}
+
+		// Group records by node ID
+		nodeRecordsMap[nodeId] = append(nodeRecordsMap[nodeId], r)
+
+		// Store default address (for unassigned roles fallback)
+		if r.IsDefault {
+			defaultAddressMap[nodeId] = defaultAddressMapV{
+				Address:       r.Address,
+				AddressFamily: r.AddressFamily,
+			}
+		}
+	}
+	return nodeRecordsMap, defaultAddressMap, nil
+}
+
+func buildDNSRecords(nodeRecordsMap map[string][]nodeRecord, defaultAddressMap map[string]defaultAddressMapV) ([]util.Record, error) {
+	records := []util.Record{}
+	// Process each node's records
+	for nodeId, nodeRecords := range nodeRecordsMap {
+		finalNodeRecords := expandRolesWithDefaults(nodeId, nodeRecords, defaultAddressMap)
+
+		// Create actual util.Record records for all nodeRecords
+		for _, r := range finalNodeRecords {
+			recs, err := recordsForNodeRecord(nodeId, r)
+			if err != nil {
+				return nil, err
+			}
+			records = append(records, recs...)
+		}
+	}
+	return records, nil
+}
+
+func expandRolesWithDefaults(nodeId string, nodeRecords []nodeRecord, defaultAddressMap map[string]defaultAddressMapV) []nodeRecord {
+	// Gather explicitly assigned roles; unassigned roles fallback to default address
+	assignedRoles := map[string]struct{}{}
+	for _, r := range nodeRecords {
+		for _, role := range r.Roles {
+			assignedRoles[role] = struct{}{}
+		}
+	}
+	// Add synthetic records for unassigned roles using default address
+	if defaultAddr, ok := defaultAddressMap[nodeId]; ok {
+		for _, role := range util.RolesList {
+			if _, assigned := assignedRoles[role]; !assigned {
+				nodeRecords = append(nodeRecords, nodeRecord{
+					Address:       defaultAddr.Address,
+					AddressFamily: defaultAddr.AddressFamily,
+					IsDefault:     true,
+					Roles:         []string{role},
+				})
+			}
+		}
+	}
+
+	return nodeRecords
+}
+
+func recordsForNodeRecord(nodeId string, r nodeRecord) ([]util.Record, error) {
+	fqdns := getFqdnsForNode(nodeId, r.Roles)
+	ip := net.ParseIP(r.Address)
+	if ip == nil {
+		ilog.Log.Warningf("db: skipping node %q with invalid IP %q", nodeId, r.Address)
+		return nil, nil
+	}
+
+	switch r.AddressFamily {
+	case "4":
+		return buildIPRecords(fqdns, dns.TypeA, ip), nil
+	case "6":
+		return buildIPRecords(fqdns, dns.TypeAAAA, ip), nil
+	default:
+		return nil, fmt.Errorf("unknown address family %q for node %q", r.AddressFamily, nodeId)
+	}
+}
+
+func buildIPRecords(fqdns []string, recordType uint16, ip net.IP) []util.Record {
+	records := make([]util.Record, 0, len(fqdns))
+	for _, fqdn := range fqdns {
+		records = append(records, util.Record{
+			FQDN: fqdn,
+			Type: recordType,
+			TTL:  30,
+			Content: util.RecordContent{
+				IP: ip,
+			},
+		})
+	}
+	return records
+}
+
+func (p *Plugin) LookupRecords(ctx context.Context, name string, qtype uint16) ([]util.Record, error) {
+	// TODO: cache to avoid hitting DB on every query
 	records, err := p.loadNodeRecords(ctx)
 	if err != nil {
-		ilog.Log.Errorf("db: failed to load records for %q: %v", name, err)
+		ilog.Log.Warningf("db: failed to load records for %q: %v", name, err)
 		return nil, err
 	}
 
-	nameFqdn := dns.Fqdn(name)
+	nameFqdn := dns.CanonicalName(name)
 	var filtered []util.Record
 
 	// Find matches based on FQDN and query type
 	for _, record := range records {
-		if record.FQDN != nameFqdn {
+		if dns.CanonicalName(record.FQDN) != nameFqdn {
 			continue
 		}
 
