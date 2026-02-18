@@ -39,6 +39,7 @@ func (p *PcePlugin) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.M
 	}
 
 	var records []util.Record
+	var nameExists bool
 	var err error
 
 	adapter, err := p.adapterFromZone(zone)
@@ -48,7 +49,7 @@ func (p *PcePlugin) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.M
 		// SERVFAIL
 		return errResponse(state, dns.RcodeServerFailure, err)
 	}
-	if records, err = adapter.LookupRecords(ctx, qName, qType); err != nil {
+	if records, nameExists, err = adapter.LookupRecords(ctx, qName, qType); err != nil {
 		log.Log.Errorf("lookup failed for name=%q type=%s: %v", qName, qTypeStr, err)
 		// SERVFAIL
 		return errResponse(state, dns.RcodeServerFailure, err)
@@ -66,6 +67,11 @@ func (p *PcePlugin) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.M
 
 		// SUCCESS
 		return successResponse(state, answers)
+	}
+	if nameExists {
+		log.Log.Debugf("name exists but no records for type for name=%q type=%s", qName, qTypeStr)
+		// NOERROR (NODATA)
+		return successResponse(state, nil)
 	}
 
 	log.Log.Debugf("no records found for name=%q type=%s", qName, qTypeStr)

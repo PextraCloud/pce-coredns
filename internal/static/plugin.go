@@ -108,8 +108,9 @@ func (p *Plugin) Close() error {
 	return nil
 }
 
-func (p *Plugin) LookupRecords(ctx context.Context, name string, qtype uint16) ([]util.Record, error) {
+func (p *Plugin) LookupRecords(ctx context.Context, name string, qtype uint16) ([]util.Record, bool, error) {
 	var results []util.Record
+	nameExists := false
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -119,6 +120,7 @@ func (p *Plugin) LookupRecords(ctx context.Context, name string, qtype uint16) (
 		if dns.CanonicalName(record.FQDN) != nameFqdn {
 			continue
 		}
+		nameExists = true
 
 		if qtype == dns.TypeANY || record.Type == qtype {
 			// Match type if not ANY
@@ -129,5 +131,5 @@ func (p *Plugin) LookupRecords(ctx context.Context, name string, qtype uint16) (
 		}
 	}
 
-	return results, nil
+	return results, nameExists, nil
 }

@@ -207,22 +207,24 @@ func buildIPRecords(fqdns []string, recordType uint16, ip net.IP) []util.Record 
 	return records
 }
 
-func (p *Plugin) LookupRecords(ctx context.Context, name string, qtype uint16) ([]util.Record, error) {
+func (p *Plugin) LookupRecords(ctx context.Context, name string, qtype uint16) ([]util.Record, bool, error) {
 	// TODO: cache to avoid hitting DB on every query
 	records, err := p.loadNodeRecords(ctx)
 	if err != nil {
 		ilog.Log.Warningf("db: failed to load records for %q: %v", name, err)
-		return nil, err
+		return nil, false, err
 	}
 
 	nameFqdn := dns.CanonicalName(name)
 	var filtered []util.Record
+	nameExists := false
 
 	// Find matches based on FQDN and query type
 	for _, record := range records {
 		if dns.CanonicalName(record.FQDN) != nameFqdn {
 			continue
 		}
+		nameExists = true
 
 		if qtype == dns.TypeANY || record.Type == qtype {
 			// Match type if not ANY
@@ -234,5 +236,5 @@ func (p *Plugin) LookupRecords(ctx context.Context, name string, qtype uint16) (
 	}
 
 	ilog.Log.Debugf("db: lookup matched %d record(s) for name=%q", len(filtered), name)
-	return filtered, nil
+	return filtered, nameExists, nil
 }

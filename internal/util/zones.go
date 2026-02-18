@@ -28,5 +28,5 @@ var ZonesList = []string{
 }
 
 type Adapter interface {
-	LookupRecords(ctx context.Context, qName string, qType uint16) ([]Record, error)
+	LookupRecords(ctx context.Context, qName string, qType uint16) ([]Record, bool, error)
 }
