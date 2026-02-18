@@ -16,6 +16,7 @@ limitations under the License.
 package db
 
 import (
+	"context"
 	"database/sql"
 	"time"
 
@@ -43,6 +44,9 @@ func NewPlugin() *Plugin {
 // Connect establishes a connection to the database
 var sqlOpen = sql.Open
 
+// Short timeout since connections are local
+const connectTimeout = 2 * time.Second
+
 func (p *Plugin) Connect() {
 	// Avoid rapid reconnection attempts
 	if time.Since(p.lastConnectAttempt) < 2*time.Second {
@@ -62,8 +66,10 @@ func (p *Plugin) Connect() {
 		return
 	}
 
-	// Test db connection, don't close on failure, it will be retried later
-	if err := db.Ping(); err != nil {
+	// Test db connection with a timeout so startup never blocks indefinitely.
+	ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
 		ilog.Log.Warningf("db: failed to ping database: %v", err)
 		_ = db.Close()
 		return
