@@ -19,10 +19,12 @@ const (
 	RoleClusterInternal = "cluster_internal"
 	RoleManagement      = "management"
 	RoleReplication     = "replication"
+	RoleMigration       = "migration"
 )
 
 var RolesList = []string{
 	RoleClusterInternal,
 	RoleManagement,
 	RoleReplication,
+	RoleMigration,
 }
